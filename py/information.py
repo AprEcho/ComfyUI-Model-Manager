@@ -170,6 +170,8 @@ class CivitaiModelSearcher(ModelSearcher):
 class HuggingfaceModelSearcher(ModelSearcher):
     def search_by_url(self, url: str):
         parsed_url = urlparse(url)
+        host_name = parsed_url.hostname
+        scheme = parsed_url.scheme
 
         pathname = parsed_url.path
 
@@ -178,7 +180,7 @@ class HuggingfaceModelSearcher(ModelSearcher):
         model_id = f"{space}/{name}"
         rest_pathname = "/".join(rest_paths)
 
-        response = requests.get(f"https://huggingface.co/api/models/{model_id}")
+        response = requests.get(f"{scheme}://{host_name}/api/models/{model_id}")
         response.raise_for_status()
         res_data: dict = response.json()
 
@@ -193,7 +195,7 @@ class HuggingfaceModelSearcher(ModelSearcher):
             utils.filter_with(sibling_files, self._match_image_files()),
             self._match_tree_files(rest_pathname),
         )
-        image_files = [f"https://huggingface.co/{model_id}/resolve/main/{filename}" for filename in image_files]
+        image_files = [f"{scheme}://{host_name}/{model_id}/resolve/main/{filename}" for filename in image_files]
 
         models: list[dict] = []
 
@@ -206,7 +208,7 @@ class HuggingfaceModelSearcher(ModelSearcher):
 
             metadata_info = {
                 "website": "HuggingFace",
-                "modelPage": f"https://huggingface.co/{model_id}",
+                "modelPage": f"{scheme}://{host_name}/{model_id}",
                 "author": res_data.get("author", None),
                 "preview": image_files,
             }
@@ -242,7 +244,7 @@ class HuggingfaceModelSearcher(ModelSearcher):
                 "description": "\n".join(description_parts),
                 "metadata": {},
                 "downloadPlatform": "huggingface",
-                "downloadUrl": f"https://huggingface.co/{model_id}/resolve/main/{filename}?download=true",
+                "downloadUrl": f"{scheme}://{host_name}/{model_id}/resolve/main/{filename}?download=true",
             }
             models.append(model)
 
@@ -284,17 +286,27 @@ class HuggingfaceModelSearcher(ModelSearcher):
         return _filter_image_files
 
     def _match_tree_files(self, pathname: str):
-        target, *paths = pathname.split("/")
-
         def _filter_tree_files(file: str):
-            if not target:
-                return True
-            if target != "tree" and target != "blob":
+            if not pathname:
                 return True
 
-            prefix_path = "/".join(paths)
-            return file.startswith(prefix_path)
+            parts = pathname.split("/")
+            target = parts[0]
 
+            # Handle direct file links via /resolve/main/
+            if target == "resolve" and len(parts) > 2 and parts[1] == "main":
+                specific_file = "/".join(parts[2:])
+                return file == specific_file
+
+            # Handle browsing subdirectories via /tree/ or /blob/
+            if target == "tree" or target == "blob":
+                if len(parts) > 2:
+                    prefix_path = "/".join(parts[2:])
+                    return file.startswith(prefix_path)
+                return True
+
+            # If it's not a special path, it's a repo root URL, so show all models.
+            return True
         return _filter_tree_files
 
 
@@ -579,6 +591,6 @@ class Information:
         host_name = parsed_url.hostname
         if host_name == "civitai.com":
             return CivitaiModelSearcher()
-        elif host_name == "huggingface.co":
+        elif host_name == "huggingface.co" or host_name == "hf-mirror.com":
             return HuggingfaceModelSearcher()
         return UnknownWebsiteSearcher()

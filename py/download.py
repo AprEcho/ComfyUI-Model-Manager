@@ -3,6 +3,7 @@ import uuid
 import time
 import requests
 import base64
+import asyncio
 
 
 import folder_paths
@@ -371,129 +372,130 @@ class ModelDownload:
         await utils.send_json("delete_download_task", task_id)
 
     async def download_model(self, task_id: str, request):
-        async def download_task(task_id: str):
-            async def report_progress(task_status: TaskStatus):
-                await utils.send_json("update_download_task", task_status.to_dict())
+        main_loop = asyncio.get_running_loop()
+
+        def download_task_sync(task_id: str):
+            def run_on_main_loop(coro):
+                asyncio.run_coroutine_threadsafe(coro, main_loop)
+
+            def report_progress_sync(task_status: TaskStatus):
+                run_on_main_loop(utils.send_json("update_download_task", task_status.to_dict()))
 
             try:
-                # When starting a task from the queue, the task may not exist
                 task_status = self.get_task_status(task_id)
-            except:
+            except Exception:
                 return
 
-            # Update task status
             task_status.status = "doing"
-            await utils.send_json("update_download_task", task_status.to_dict())
+            run_on_main_loop(utils.send_json("update_download_task", task_status.to_dict()))
 
             try:
-
-                # Set download request headers
                 headers = {"User-Agent": config.user_agent}
-
                 download_platform = task_status.platform
                 if download_platform == "civitai":
                     api_key = self.api_key.get_value("civitai")
                     if api_key:
                         headers["Authorization"] = f"Bearer {api_key}"
-
                 elif download_platform == "huggingface":
                     api_key = self.api_key.get_value("huggingface")
                     if api_key:
                         headers["Authorization"] = f"Bearer {api_key}"
 
                 progress_interval = 1.0
-                await self.download_model_file(
+                self.download_model_file(
                     task_id=task_id,
                     headers=headers,
-                    progress_callback=report_progress,
+                    progress_callback=report_progress_sync,
                     interval=progress_interval,
+                    run_on_main_loop_func=run_on_main_loop,
                 )
             except Exception as e:
                 task_status.status = "pause"
                 task_status.error = str(e)
-                await utils.send_json("update_download_task", task_status.to_dict())
+                run_on_main_loop(utils.send_json("update_download_task", task_status.to_dict()))
                 task_status.error = None
                 utils.print_error(str(e))
 
         try:
-            status = self.download_thread_pool.submit(download_task, task_id)
+            status = self.download_thread_pool.submit(download_task_sync, task_id)
             if status == "Waiting":
                 task_status = self.get_task_status(task_id)
                 task_status.status = "waiting"
                 await utils.send_json("update_download_task", task_status.to_dict())
         except Exception as e:
-            task_status.status = "pause"
-            task_status.error = str(e)
-            await utils.send_json("update_download_task", task_status.to_dict())
-            task_status.error = None
+            try:
+                task_status = self.get_task_status(task_id)
+                task_status.status = "pause"
+                task_status.error = str(e)
+                await utils.send_json("update_download_task", task_status.to_dict())
+                task_status.error = None
+            except Exception as final_e:
+                utils.print_error(f"Error in download_model exception handler: {final_e}")
             utils.print_error(str(e))
 
-    async def download_model_file(
+    def download_model_file(
         self,
         task_id: str,
         headers: dict,
-        progress_callback: Callable[[TaskStatus], Awaitable[Any]],
+        progress_callback: Callable[[TaskStatus], None],
         interval: float = 1.0,
+        run_on_main_loop_func: Callable[[Awaitable], None] = None,
     ):
+        download_path = utils.get_download_path()
+        task_status = self.get_task_status(task_id)
+        task_content = self.get_task_content(task_id)
+        download_tmp_file = utils.join_path(download_path, f"{task_id}.download")
 
-        async def download_complete():
-            """
-            Restore the model information from the task file
-            and move the model file to the target directory.
-            """
+        def download_complete():
             model_type = task_content.type
             path_index = task_content.pathIndex
             fullname = task_content.fullname
-            # Write description file
             description = task_content.description
             description_file = utils.join_path(download_path, f"{task_id}.md")
             with open(description_file, "w", encoding="utf-8", newline="") as f:
                 f.write(description)
-
             model_path = utils.get_full_path(model_type, path_index, fullname)
-
             utils.rename_model(download_tmp_file, model_path)
-
             time.sleep(1)
             task_file = utils.join_path(download_path, f"{task_id}.task")
             os.remove(task_file)
-            await utils.send_json("complete_download_task", task_id)
+            if run_on_main_loop_func:
+                run_on_main_loop_func(utils.send_json("complete_download_task", task_id))
 
-        async def update_progress():
-            nonlocal last_update_time
-            nonlocal last_downloaded_size
-            progress = (downloaded_size / total_size) * 100 if total_size > 0 else 0
-            task_status.downloadedSize = downloaded_size
-            task_status.progress = progress
-            task_status.bps = downloaded_size - last_downloaded_size
-            await progress_callback(task_status)
-            last_update_time = time.time()
-            last_downloaded_size = downloaded_size
-
-        task_status = self.get_task_status(task_id)
-        task_content = self.get_task_content(task_id)
-
-        # Check download uri
-        model_url = task_content.downloadUrl
-        if not model_url:
-            raise RuntimeError("No downloadUrl found")
-
-        download_path = utils.get_download_path()
-        download_tmp_file = utils.join_path(download_path, f"{task_id}.download")
-
+        last_update_time = time.time()
+        last_downloaded_size = 0
         downloaded_size = 0
         if os.path.isfile(download_tmp_file):
             downloaded_size = os.path.getsize(download_tmp_file)
             headers["Range"] = f"bytes={downloaded_size}-"
-
+        
         total_size = task_content.sizeBytes
 
+        def update_progress():
+            nonlocal last_update_time, last_downloaded_size
+            current_time = time.time()
+            delta_time = current_time - last_update_time
+            if delta_time > 0:
+                bps = (downloaded_size - last_downloaded_size) / delta_time
+            else:
+                bps = 0
+            
+            progress = (downloaded_size / total_size) * 100 if total_size > 0 else 0
+            task_status.downloadedSize = downloaded_size
+            task_status.progress = progress
+            task_status.bps = bps
+            progress_callback(task_status)
+            last_update_time = current_time
+            last_downloaded_size = downloaded_size
+
         if total_size > 0 and downloaded_size == total_size:
-            await download_complete()
+            download_complete()
             return
 
-        last_update_time = time.time()
         last_downloaded_size = downloaded_size
+        model_url = task_content.downloadUrl
+        if not model_url:
+            raise RuntimeError("No downloadUrl found")
 
         response = requests.get(
             url=model_url,
@@ -505,45 +507,42 @@ class ModelDownload:
         if response.status_code not in (200, 206):
             raise RuntimeError(f"Failed to download {task_content.fullname}, status code: {response.status_code}")
 
-        # Some models require logging in before they can be downloaded.
-        # If no token is carried, it will be redirected to the login page.
         content_type = response.headers.get("content-type")
         if content_type and content_type.startswith("text/html"):
-            # TODO More checks
-            # In addition to requiring login to download, there may be other restrictions.
-            # The currently one situation is early access??? issues#43
-            # Due to the lack of test data, let’s put it aside for now.
-            # If it cannot be downloaded, a redirect will definitely occur.
-            # Maybe consider getting the redirect url from response.history to make a judgment.
-            # Here we also need to consider how different websites are processed.
             raise RuntimeError(f"{task_content.fullname} needs to be logged in to download. Please set the API-Key first.")
 
-        # When parsing model information from HuggingFace API,
-        # the file size was not found and needs to be obtained from the response header.
-        # Fixed issue #169. Some model information from Civitai, providing the wrong file size
-        response_total_size = float(response.headers.get("content-length", 0))
-        if total_size == 0 or total_size != response_total_size:
-            total_size = response_total_size
+        if response.status_code == 200:
+            response_total_size = float(response.headers.get("content-length", 0))
+            if total_size == 0 or total_size != response_total_size:
+                total_size = response_total_size
+        elif response.status_code == 206:
+            content_range = response.headers.get("content-range")
+            if content_range:
+                response_total_size = float(content_range.split("/")[-1])
+                if total_size == 0 or total_size != response_total_size:
+                    total_size = response_total_size
+
+        if task_content.sizeBytes != total_size:
             task_content.sizeBytes = total_size
             task_status.totalSize = total_size
             self.set_task_content(task_id, task_content)
-            await utils.send_json("update_download_task", task_content.to_dict())
+            if run_on_main_loop_func:
+                run_on_main_loop_func(utils.send_json("update_download_task", task_status.to_dict()))
 
         with open(download_tmp_file, "ab") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if task_status.status == "pause":
                     break
-
                 f.write(chunk)
                 downloaded_size += len(chunk)
-
                 if time.time() - last_update_time >= interval:
-                    await update_progress()
+                    update_progress()
 
-        await update_progress()
+        update_progress()
 
         if total_size > 0 and downloaded_size == total_size:
-            await download_complete()
+            download_complete()
         else:
             task_status.status = "pause"
-            await utils.send_json("update_download_task", task_status.to_dict())
+            if run_on_main_loop_func:
+                run_on_main_loop_func(utils.send_json("update_download_task", task_status.to_dict()))

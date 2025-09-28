@@ -38,8 +38,6 @@ class DownloadThreadPool:
             self.workers_count += 1
 
     def _worker(self):
-        loop = asyncio.new_event_loop()
-
         while True:
             if self.task_queue.empty():
                 break
@@ -47,7 +45,7 @@ class DownloadThreadPool:
             task, task_id = self.task_queue.get()
 
             try:
-                loop.run_until_complete(task(task_id))
+                task(task_id)
                 with self._lock:
                     self.running_tasks.remove(task_id)
             except Exception as e:
