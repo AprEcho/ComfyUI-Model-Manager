@@ -38,7 +38,7 @@ class ModelSearcher(ABC):
 
 class UnknownWebsiteSearcher(ModelSearcher):
     def search_by_url(self, url: str):
-        raise RuntimeError(f"Unknown Website, please input a URL from huggingface.co or civitai.com.")
+        raise RuntimeError(f"Unknown Website, please input a URL from huggingface.co, hf-mirror.com, civitai.com or civitai.red.")
 
     def search_by_hash(self, hash: str):
         raise RuntimeError(f"Unknown Website, unable to search with hash value.")
@@ -170,15 +170,29 @@ class CivitaiModelSearcher(ModelSearcher):
 class HuggingfaceModelSearcher(ModelSearcher):
     def search_by_url(self, url: str):
         parsed_url = urlparse(url)
+        hostname = parsed_url.hostname or "huggingface.co"
 
         pathname = parsed_url.path
 
-        space, name, *rest_paths = pathname.strip("/").split("/")
+        parts = pathname.strip("/").split("/")
+        if len(parts) < 2:
+            raise RuntimeError(f"Invalid HuggingFace URL: {url}")
+
+        space, name, *rest_paths = parts
 
         model_id = f"{space}/{name}"
         rest_pathname = "/".join(rest_paths)
 
-        response = requests.get(f"https://huggingface.co/api/models/{model_id}")
+        revision = None
+        if len(rest_paths) >= 2 and rest_paths[0] in ["blob", "tree", "resolve"]:
+            revision = rest_paths[1]
+
+        api_url = f"https://{hostname}/api/models/{model_id}"
+        params = {}
+        if revision:
+            params["revision"] = revision
+
+        response = requests.get(api_url, params=params)
         response.raise_for_status()
         res_data: dict = response.json()
 
@@ -193,7 +207,7 @@ class HuggingfaceModelSearcher(ModelSearcher):
             utils.filter_with(sibling_files, self._match_image_files()),
             self._match_tree_files(rest_pathname),
         )
-        image_files = [f"https://huggingface.co/{model_id}/resolve/main/{filename}" for filename in image_files]
+        image_files = [f"https://{hostname}/{model_id}/resolve/{revision or 'main'}/{filename}" for filename in image_files]
 
         models: list[dict] = []
 
@@ -202,11 +216,9 @@ class HuggingfaceModelSearcher(ModelSearcher):
             extension = os.path.splitext(fullname)[1]
             basename = os.path.splitext(fullname)[0]
 
-            description_parts: list[str] = []
-
             metadata_info = {
                 "website": "HuggingFace",
-                "modelPage": f"https://huggingface.co/{model_id}",
+                "modelPage": f"https://{hostname}/{model_id}",
                 "author": res_data.get("author", None),
                 "preview": image_files,
             }
@@ -242,7 +254,7 @@ class HuggingfaceModelSearcher(ModelSearcher):
                 "description": "\n".join(description_parts),
                 "metadata": {},
                 "downloadPlatform": "huggingface",
-                "downloadUrl": f"https://huggingface.co/{model_id}/resolve/main/{filename}?download=true",
+                "downloadUrl": f"https://{hostname}/{model_id}/resolve/{revision or 'main'}/{filename}?download=true",
             }
             models.append(model)
 
@@ -284,16 +296,22 @@ class HuggingfaceModelSearcher(ModelSearcher):
         return _filter_image_files
 
     def _match_tree_files(self, pathname: str):
-        target, *paths = pathname.split("/")
+        parts = pathname.split("/")
+        target = parts[0] if parts else ""
 
         def _filter_tree_files(file: str):
             if not target:
                 return True
-            if target != "tree" and target != "blob":
+            if target not in ["tree", "blob", "resolve"]:
                 return True
 
-            prefix_path = "/".join(paths)
-            return file.startswith(prefix_path)
+            # Hugging Face path format: /{target}/{branch}/{path}
+            # sibling_files are relative to the root of the repo, so we skip {target} and {branch}
+            sub_path = "/".join(parts[2:])
+            if not sub_path:
+                return True
+
+            return file == sub_path or file.startswith(sub_path + "/")
 
         return _filter_tree_files
 
@@ -577,8 +595,8 @@ class Information:
     def get_model_searcher_by_url(self, url: str) -> ModelSearcher:
         parsed_url = urlparse(url)
         host_name = parsed_url.hostname
-        if host_name == "civitai.com":
+        if host_name in ["civitai.com", "civitai.red"]:
             return CivitaiModelSearcher()
-        elif host_name == "huggingface.co":
+        elif host_name in ["huggingface.co", "hf-mirror.com"]:
             return HuggingfaceModelSearcher()
         return UnknownWebsiteSearcher()
