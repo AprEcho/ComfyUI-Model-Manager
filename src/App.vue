@@ -1,6 +1,6 @@
 <template>
   <GlobalToast></GlobalToast>
-  <GlobalConfirm></GlobalConfirm>
+  <GlobalConfirm pt:mask:class="model-manager-confirm-mask"></GlobalConfirm>
   <GlobalLoading></GlobalLoading>
   <GlobalDialogStack></GlobalDialogStack>
 </template>

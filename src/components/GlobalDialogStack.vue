@@ -5,7 +5,7 @@
     v-model:visible="item.visible"
     v-bind="omitProps(item)"
     :auto-z-index="false"
-    :pt:mask:style="{ zIndex: baseZIndex + index + 1 }"
+    :pt:mask:style="{ zIndex: baseZIndex + index * 10 + 1 }"
     :pt:root:onMousedown="() => rise(item)"
     @hide="() => close(item)"
   >

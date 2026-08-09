@@ -3,4 +3,8 @@
 @layer tailwind-utilities {
   @tailwind components;
   @tailwind utilities;
+
+  .model-manager-confirm-mask {
+    z-index: 2147483647 !important;
+  }
 }
