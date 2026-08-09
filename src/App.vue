@@ -10,6 +10,7 @@ import DialogDownload from 'components/DialogDownload.vue'
 import DialogExplorer from 'components/DialogExplorer.vue'
 import DialogManager from 'components/DialogManager.vue'
 import DialogScanning from 'components/DialogScanning.vue'
+import DialogSettings from 'components/DialogSettings.vue'
 import DialogUpload from 'components/DialogUpload.vue'
 import GlobalDialogStack from 'components/GlobalDialogStack.vue'
 import GlobalLoading from 'components/GlobalLoading.vue'
@@ -77,6 +78,19 @@ onMounted(() => {
           command: refreshModelsAndConfig,
         },
       ],
+    })
+  }
+
+  const openSettingsDialog = async () => {
+    await download.init()
+    dialog.open({
+      key: 'model-manager-settings',
+      title: t('settings'),
+      content: DialogSettings,
+      defaultSize: {
+        width: 500,
+        height: 450,
+      },
     })
   }
 
@@ -155,6 +169,12 @@ onMounted(() => {
           key: 'upload',
           icon: 'pi pi-upload',
           command: openUploadDialog,
+        },
+        {
+          key: 'settings',
+          icon: 'pi pi-cog',
+          command: openSettingsDialog,
+          tooltip: t('settings'),
         },
       ],
       minWidth: cardWidth * 2 + gutter + 42,

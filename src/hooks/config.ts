@@ -181,32 +181,7 @@ function useAddConfigSettings(store: import('hooks/store').StoreProvider) {
   }
 
   onMounted(() => {
-    // API keys
-    app.ui?.settings.addSetting({
-      id: 'ModelManager.APIKey.HuggingFace',
-      category: [t('modelManager'), t('setting.apiKey'), 'HuggingFace'],
-      name: 'HuggingFace API Key',
-      defaultValue: undefined,
-      type: renderApiKey('huggingface'),
-    })
-
-    app.ui?.settings.addSetting({
-      id: 'ModelManager.APIKey.Civitai',
-      category: [t('modelManager'), t('setting.apiKey'), 'Civitai'],
-      name: 'Civitai API Key',
-      defaultValue: undefined,
-      type: renderApiKey('civitai'),
-    })
-
     const defaultCardSize = store.config.defaultCardSizeMap
-    app.ui?.settings.addSetting({
-      id: 'ModelManager.APIKey.ModelScope',
-      category: [t('modelManager'), t('setting.apiKey'), 'ModelScope'],
-      name: 'ModelScope API Token',
-      defaultValue: undefined,
-      type: renderApiKey('modelscope'),
-    })
-
     app.ui?.settings.addSetting({
       id: 'ModelManager.UI.CardSize',
       category: [t('modelManager'), t('setting.ui'), 'CardSize'],

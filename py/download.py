@@ -16,6 +16,7 @@ from aiohttp import web
 from . import config
 from . import utils
 from . import thread
+from .api_key import ApiKey
 
 
 @dataclass
@@ -95,43 +96,6 @@ class TaskContent:
         }
 
 
-class ApiKey:
-
-    __store: dict[str, str] = {}
-
-    def __init__(self):
-        self.__cache_file = os.path.join(config.extension_uri, "private.key")
-
-    def init(self, request):
-        # Try to migrate api key from user setting
-        if not os.path.exists(self.__cache_file):
-            self.__store = {
-                "civitai": utils.get_setting_value(request, "api_key.civitai"),
-                "huggingface": utils.get_setting_value(request, "api_key.huggingface"),
-            }
-            self.__update__()
-            # Remove api key from user setting
-            utils.set_setting_value(request, "api_key.civitai", None)
-            utils.set_setting_value(request, "api_key.huggingface", None)
-        self.__store = utils.load_dict_pickle_file(self.__cache_file)
-        # Desensitization returns
-        result: dict[str, str] = {}
-        for key in self.__store:
-            v = self.__store[key]
-            if v is not None:
-                result[key] = v[:4] + "****" + v[-4:]
-        return result
-
-    def get_value(self, key: str):
-        return self.__store.get(key, None)
-
-    def set_value(self, key: str, value: str):
-        self.__store[key] = value
-        self.__update__()
-
-    def __update__(self):
-        utils.save_dict_pickle_file(self.__cache_file, self.__store)
-
 def _resolve_download_response(status_code: int, response_headers, downloaded_size: int, total_size: float):
     content_range = response_headers.get("content-range") or response_headers.get("Content-Range")
     if content_range:
@@ -146,7 +110,6 @@ def _resolve_download_response(status_code: int, response_headers, downloaded_si
             return total_size, 0, "wb"
 
     return total_size, downloaded_size, "ab"
-
 
 
 class ModelDownload:

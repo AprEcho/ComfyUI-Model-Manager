@@ -20,7 +20,7 @@ from io import BytesIO
 from . import utils
 from . import config
 from . import thread
-from .download import ApiKey
+from .api_key import ApiKey
 
 
 class ModelSearcher(ABC):

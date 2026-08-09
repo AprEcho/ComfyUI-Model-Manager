@@ -39,6 +39,7 @@
   "scanFullInformation": "Override full information",
   "noModelsInCurrentPath": "There are no models available in the current path",
   "uploadModel": "Upload Model",
+  "settings": "Settings",
   "chooseFile": "Choose File",
   "sort": {
     "name": "Name",

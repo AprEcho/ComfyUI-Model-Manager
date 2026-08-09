@@ -102,7 +102,7 @@ export const useDownload = defineStore('download', (store) => {
     init()
 
     api.addEventListener('reconnected', () => {
-      refresh()
+      Promise.all([refresh(), init()])
     })
 
     api.addEventListener('fetch_download_task_list', (event) => {
@@ -160,7 +160,7 @@ export const useDownload = defineStore('download', (store) => {
     refresh()
   })
 
-  return { data: taskList, refresh }
+  return { data: taskList, refresh, init }
 })
 
 declare module 'hooks/store' {
