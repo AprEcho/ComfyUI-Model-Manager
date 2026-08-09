@@ -132,6 +132,22 @@ class ApiKey:
     def __update__(self):
         utils.save_dict_pickle_file(self.__cache_file, self.__store)
 
+def _resolve_download_response(status_code: int, response_headers, downloaded_size: int, total_size: float):
+    content_range = response_headers.get("content-range") or response_headers.get("Content-Range")
+    if content_range:
+        total_size = float(content_range.split("/")[-1])
+        return total_size, downloaded_size, "ab"
+
+    if status_code == 200:
+        content_length = response_headers.get("content-length") or response_headers.get("Content-Length")
+        if content_length is not None:
+            total_size = float(content_length)
+        if downloaded_size > 0:
+            return total_size, 0, "wb"
+
+    return total_size, downloaded_size, "ab"
+
+
 
 class ModelDownload:
     def __init__(self):
@@ -402,6 +418,11 @@ class ModelDownload:
                     if api_key:
                         headers["Authorization"] = f"Bearer {api_key}"
 
+                elif download_platform == "modelscope":
+                    api_key = self.api_key.get_value("modelscope")
+                    if api_key:
+                        headers["Authorization"] = f"Bearer {api_key}"
+
                 progress_interval = 1.0
                 await self.download_model_file(
                     task_id=task_id,
@@ -532,16 +553,15 @@ class ModelDownload:
                 if content_type and content_type.startswith("text/html"):
                     raise RuntimeError(f"{task_content.fullname} needs to be logged in to download. Please set the API-Key first.")
 
-                if response.status_code == 200:
-                    response_total_size = float(response.headers.get("content-length", 0))
-                    if total_size == 0 or total_size != response_total_size:
-                        total_size = response_total_size
-                elif response.status_code == 206:
-                    content_range = response.headers.get("content-range")
-                    if content_range:
-                        response_total_size = float(content_range.split("/")[-1])
-                        if total_size == 0 or total_size != response_total_size:
-                            total_size = response_total_size
+                total_size, downloaded_size, write_mode = _resolve_download_response(
+                    response.status_code,
+                    response.headers,
+                    downloaded_size,
+                    total_size,
+                )
+                if write_mode == "wb":
+                    headers.pop("Range", None)
+                    last_downloaded_size = 0
 
                 if task_content.sizeBytes != total_size:
                     task_content.sizeBytes = total_size
@@ -549,7 +569,7 @@ class ModelDownload:
                     self.set_task_content(task_id, task_content)
                     await utils.send_json("update_download_task", task_status.to_dict())
 
-                with open(download_tmp_file, "ab") as f:
+                with open(download_tmp_file, write_mode) as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if task_status.status == "pause":
                             return

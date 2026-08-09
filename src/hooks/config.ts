@@ -199,6 +199,13 @@ function useAddConfigSettings(store: import('hooks/store').StoreProvider) {
     })
 
     const defaultCardSize = store.config.defaultCardSizeMap
+    app.ui?.settings.addSetting({
+      id: 'ModelManager.APIKey.ModelScope',
+      category: [t('modelManager'), t('setting.apiKey'), 'ModelScope'],
+      name: 'ModelScope API Token',
+      defaultValue: undefined,
+      type: renderApiKey('modelscope'),
+    })
 
     app.ui?.settings.addSetting({
       id: 'ModelManager.UI.CardSize',

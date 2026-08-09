@@ -12,7 +12,7 @@ import folder_paths
 
 from aiohttp import web
 from abc import ABC, abstractmethod
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 from PIL import Image
 from io import BytesIO
 
@@ -20,6 +20,7 @@ from io import BytesIO
 from . import utils
 from . import config
 from . import thread
+from .download import ApiKey
 
 
 class ModelSearcher(ABC):
@@ -38,7 +39,7 @@ class ModelSearcher(ABC):
 
 class UnknownWebsiteSearcher(ModelSearcher):
     def search_by_url(self, url: str):
-        raise RuntimeError(f"Unknown Website, please input a URL from huggingface.co, hf-mirror.com, civitai.com or civitai.red.")
+        raise RuntimeError(f"Unknown Website, please input a URL from huggingface.co, hf-mirror.com, modelscope.cn, civitai.com or civitai.red.")
 
     def search_by_hash(self, hash: str):
         raise RuntimeError(f"Unknown Website, unable to search with hash value.")
@@ -314,6 +315,90 @@ class HuggingfaceModelSearcher(ModelSearcher):
             return file == sub_path or file.startswith(sub_path + "/")
 
         return _filter_tree_files
+
+
+class ModelScopeModelSearcher(HuggingfaceModelSearcher):
+    def __init__(self):
+        self.api_key = ApiKey()
+
+    def search_by_url(self, url: str):
+        parsed_url = urlparse(url)
+        parts = parsed_url.path.strip("/").split("/")
+        if len(parts) < 3 or parts[0] != "models":
+            raise RuntimeError(f"Invalid ModelScope URL: {url}")
+
+        owner, repo = parts[1:3]
+        rest_paths = parts[3:]
+        revision = "master"
+        target_file = None
+        if len(rest_paths) >= 2 and rest_paths[0] == "resolve":
+            revision = rest_paths[1]
+            target_file = "/".join(rest_paths[2:]) or None
+        elif len(rest_paths) >= 4 and rest_paths[:2] == ["file", "view"]:
+            revision = rest_paths[2]
+            target_file = "/".join(rest_paths[3:])
+
+        headers = {}
+        api_key = self.api_key.get_value("modelscope")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        model_id = f"{owner}/{repo}"
+        response = requests.get(
+            f"https://modelscope.cn/api/v1/models/{model_id}/repo/files",
+            params={"Revision": revision, "Recursive": "true"},
+            headers=headers,
+        )
+        response.raise_for_status()
+        res_data: dict = response.json()
+        repo_files: list[dict] = res_data.get("Data", {}).get("Files", [])
+
+        model_files = [file for file in repo_files if file.get("Path") and self._match_model_files()(file["Path"])]
+        if target_file:
+            model_files = [file for file in model_files if file["Path"] == target_file]
+
+        image_files = [file["Path"] for file in repo_files if file.get("Path") and self._match_image_files()(file["Path"])]
+        preview_urls = [
+            f"https://modelscope.cn/models/{model_id}/resolve/{quote(revision, safe='')}/{quote(path, safe='/')}"
+            for path in image_files
+        ]
+
+        models: list[dict] = []
+        for file in model_files:
+            filename = file["Path"]
+            fullname = os.path.basename(filename)
+            extension = os.path.splitext(fullname)[1]
+            basename = os.path.splitext(fullname)[0]
+            metadata_info = {
+                "website": "ModelScope",
+                "modelPage": f"https://modelscope.cn/models/{model_id}",
+                "author": owner,
+                "preview": preview_urls,
+            }
+            description = "---\n" + yaml.dump(metadata_info).strip() + "\n---"
+            models.append(
+                {
+                    "id": filename,
+                    "shortname": filename,
+                    "basename": basename,
+                    "extension": extension,
+                    "preview": preview_urls,
+                    "sizeBytes": file.get("Size", 0),
+                    "type": "",
+                    "pathIndex": 0,
+                    "subFolder": "",
+                    "description": description,
+                    "metadata": file,
+                    "downloadPlatform": "modelscope",
+                    "downloadUrl": f"https://modelscope.cn/models/{model_id}/resolve/{quote(revision, safe='')}/{quote(filename, safe='/')}",
+                    "hashes": {"SHA256": file.get("Sha256")},
+                }
+            )
+
+        return models
+
+    def search_by_hash(self, hash: str):
+        raise RuntimeError("Hash search is not supported by ModelScope.")
 
 
 class Information:
@@ -599,4 +684,6 @@ class Information:
             return CivitaiModelSearcher()
         elif host_name in ["huggingface.co", "hf-mirror.com"]:
             return HuggingfaceModelSearcher()
+        elif host_name == "modelscope.cn":
+            return ModelScopeModelSearcher()
         return UnknownWebsiteSearcher()
