@@ -9,6 +9,7 @@ import traceback
 import configparser
 import functools
 import mimetypes
+import asyncio
 
 import comfy.utils
 import folder_paths
@@ -529,7 +530,16 @@ def get_setting_value(request: web.Request, key: str, default: Any = None) -> An
 
 
 async def send_json(event: str, data: Any, sid: str = None):
-    await config.serverInstance.send_json(event, data, sid)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop == config.serverInstance.loop:
+        await config.serverInstance.send_json(event, data, sid)
+    else:
+        fut = asyncio.run_coroutine_threadsafe(config.serverInstance.send_json(event, data, sid), config.serverInstance.loop)
+        await asyncio.wrap_future(fut)
 
 
 import sys

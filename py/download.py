@@ -348,6 +348,7 @@ class ModelDownload:
     async def pause_model_download_task(self, task_id: str):
         task_status = self.get_task_status(task_id=task_id)
         task_status.status = "pause"
+        await utils.send_json("update_download_task", task_status.to_dict())
 
     async def delete_model_download_task(self, task_id: str):
         task_status = self.get_task_status(task_id)
@@ -481,69 +482,106 @@ class ModelDownload:
         download_path = utils.get_download_path()
         download_tmp_file = utils.join_path(download_path, f"{task_id}.download")
 
-        downloaded_size = 0
-        if os.path.isfile(download_tmp_file):
-            downloaded_size = os.path.getsize(download_tmp_file)
-            headers["Range"] = f"bytes={downloaded_size}-"
-
         total_size = task_content.sizeBytes
-
-        if total_size > 0 and downloaded_size == total_size:
-            await download_complete()
-            return
-
         last_update_time = time.time()
-        last_downloaded_size = downloaded_size
+        last_downloaded_size = 0
 
-        response = requests.get(
-            url=model_url,
-            headers=headers,
-            stream=True,
-            allow_redirects=True,
-        )
+        retry_start_time = None
+        max_retry_duration = 60
 
-        if response.status_code not in (200, 206):
-            raise RuntimeError(f"Failed to download {task_content.fullname}, status code: {response.status_code}")
+        while True:
+            downloaded_size = 0
+            if os.path.isfile(download_tmp_file):
+                downloaded_size = os.path.getsize(download_tmp_file)
+                headers["Range"] = f"bytes={downloaded_size}-"
 
-        # Some models require logging in before they can be downloaded.
-        # If no token is carried, it will be redirected to the login page.
-        content_type = response.headers.get("content-type")
-        if content_type and content_type.startswith("text/html"):
-            # TODO More checks
-            # In addition to requiring login to download, there may be other restrictions.
-            # The currently one situation is early access??? issues#43
-            # Due to the lack of test data, let’s put it aside for now.
-            # If it cannot be downloaded, a redirect will definitely occur.
-            # Maybe consider getting the redirect url from response.history to make a judgment.
-            # Here we also need to consider how different websites are processed.
-            raise RuntimeError(f"{task_content.fullname} needs to be logged in to download. Please set the API-Key first.")
+            if total_size > 0 and downloaded_size == total_size:
+                await download_complete()
+                return
 
-        # When parsing model information from HuggingFace API,
-        # the file size was not found and needs to be obtained from the response header.
-        # Fixed issue #169. Some model information from Civitai, providing the wrong file size
-        response_total_size = float(response.headers.get("content-length", 0))
-        if total_size == 0 or total_size != response_total_size:
-            total_size = response_total_size
-            task_content.sizeBytes = total_size
-            task_status.totalSize = total_size
-            self.set_task_content(task_id, task_content)
-            await utils.send_json("update_download_task", task_content.to_dict())
+            if last_downloaded_size == 0:
+                last_downloaded_size = downloaded_size
 
-        with open(download_tmp_file, "ab") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if task_status.status == "pause":
-                    break
+            try:
+                response = requests.get(
+                    url=model_url,
+                    headers=headers,
+                    stream=True,
+                    allow_redirects=True,
+                    timeout=30
+                )
 
-                f.write(chunk)
-                downloaded_size += len(chunk)
+                if response.status_code == 416: # Range Not Satisfiable
+                    if downloaded_size > total_size:
+                        # File on disk is larger than total size, something is wrong
+                        os.remove(download_tmp_file)
+                        downloaded_size = 0
+                        continue
+                    elif downloaded_size == total_size:
+                        await download_complete()
+                        return
 
-                if time.time() - last_update_time >= interval:
-                    await update_progress()
+                if response.status_code not in (200, 206):
+                    raise RuntimeError(f"Failed to download {task_content.fullname}, status code: {response.status_code}")
 
-        await update_progress()
+                # Reset retry timer on success
+                retry_start_time = None
 
-        if total_size > 0 and downloaded_size == total_size:
-            await download_complete()
-        else:
-            task_status.status = "pause"
-            await utils.send_json("update_download_task", task_status.to_dict())
+                # Some models require logging in before they can be downloaded.
+                content_type = response.headers.get("content-type")
+                if content_type and content_type.startswith("text/html"):
+                    raise RuntimeError(f"{task_content.fullname} needs to be logged in to download. Please set the API-Key first.")
+
+                if response.status_code == 200:
+                    response_total_size = float(response.headers.get("content-length", 0))
+                    if total_size == 0 or total_size != response_total_size:
+                        total_size = response_total_size
+                elif response.status_code == 206:
+                    content_range = response.headers.get("content-range")
+                    if content_range:
+                        response_total_size = float(content_range.split("/")[-1])
+                        if total_size == 0 or total_size != response_total_size:
+                            total_size = response_total_size
+
+                if task_content.sizeBytes != total_size:
+                    task_content.sizeBytes = total_size
+                    task_status.totalSize = total_size
+                    self.set_task_content(task_id, task_content)
+                    await utils.send_json("update_download_task", task_status.to_dict())
+
+                with open(download_tmp_file, "ab") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if task_status.status == "pause":
+                            return
+
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+
+                        if time.time() - last_update_time >= interval:
+                            await update_progress()
+                
+                # If we finished the loop without break or exception
+                await update_progress()
+                if total_size > 0 and downloaded_size == total_size:
+                    await download_complete()
+                    return
+                else:
+                    # Connection closed prematurely
+                    raise requests.exceptions.ConnectionError("Connection closed prematurely")
+
+            except (requests.exceptions.RequestException, RuntimeError) as e:
+                # If it's a specific RuntimeError like login required, don't retry
+                if "needs to be logged in" in str(e):
+                    raise e
+                
+                if retry_start_time is None:
+                    retry_start_time = time.time()
+                
+                elapsed = time.time() - retry_start_time
+                if elapsed >= max_retry_duration:
+                    utils.print_error(f"Download failed after {max_retry_duration}s retries: {e}")
+                    raise e
+                
+                utils.print_warning(f"Network error: {e}. Retrying in 5s... ({int(max_retry_duration - elapsed)}s left)")
+                time.sleep(5)
+                continue
