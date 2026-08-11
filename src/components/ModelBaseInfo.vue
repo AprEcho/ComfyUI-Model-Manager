@@ -184,7 +184,7 @@ const { stack } = useDialog()
 const { config } = usePrimeVue()
 const zIndex = computed(() => {
   const baseZIndex = config.zIndex?.modal ?? 1100
-  return baseZIndex + stack.value.length + 1
+  return baseZIndex + stack.value.length * 10 + 1
 })
 
 const handleSelectFolder = () => {
